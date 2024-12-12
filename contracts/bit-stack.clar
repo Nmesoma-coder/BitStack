@@ -7,9 +7,11 @@
 (define-constant ERR-LOAN-NOT-FOUND (err u3))
 (define-constant ERR-LOAN-ALREADY-ACTIVE (err u4))
 (define-constant ERR-INVALID-INPUT (err u5))
+(define-constant ERR-INSUFFICIENT-EXCESS-COLLATERAL (err u6))
 (define-constant COLLATERAL-RATIO u150) ;; 150% collateralization ratio
 (define-constant MAX-LOAN-DURATION u2880) ;; ~20 days (144 blocks/day)
 (define-constant MAX-INTEREST-RATE u1000) ;; 10% max interest rate
+(define-constant MIN-COLLATERAL-BUFFER u50) ;; Minimum buffer to prevent withdrawals that could liquidate the loan
 
 ;; Data vars
 (define-data-var minimum-collateral uint u100000) ;; in sats
@@ -56,6 +58,70 @@
         
         ;; Validate collateral ratio
         (is-collateral-ratio-valid amount collateral)
+    )
+)
+
+;; Collateral management functions
+(define-private (calculate-minimum-required-collateral (loan-amount uint))
+    (/ (* loan-amount COLLATERAL-RATIO) u10000)
+)
+
+(define-private (calculate-max-withdrawable-collateral 
+    (current-collateral uint) 
+    (loan-amount uint)
+)
+    (let
+        (
+            (min-required (calculate-minimum-required-collateral loan-amount))
+            ;; Add a small buffer to prevent risky withdrawals
+            (safe-buffer (/ min-required u10))
+        )
+        (if (> current-collateral (+ min-required safe-buffer))
+            (- current-collateral (+ min-required safe-buffer))
+            u0
+        )
+    )
+)
+
+;; Public functions
+(define-public (withdraw-excess-collateral 
+    (loan-id uint) 
+    (withdrawal-amount uint)
+)
+    (let
+        (
+            (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
+            (caller tx-sender)
+        )
+        ;; Validate inputs
+        (asserts! (is-eq (get borrower loan) caller) ERR-NOT-AUTHORIZED)
+        (asserts! (is-eq (get status loan) "ACTIVE") ERR-LOAN-NOT-FOUND)
+        
+        ;; Calculate maximum withdrawable amount
+        (let
+            (
+                (max-withdrawable 
+                    (calculate-max-withdrawable-collateral 
+                        (get collateral loan) 
+                        (get amount loan)
+                    )
+                )
+            )
+            ;; Ensure withdrawal amount is valid
+            (asserts! (> withdrawal-amount u0) ERR-INVALID-INPUT)
+            (asserts! (<= withdrawal-amount max-withdrawable) ERR-INSUFFICIENT-EXCESS-COLLATERAL)
+            
+            ;; Update loan with reduced collateral
+            (map-set loans
+                { loan-id: loan-id }
+                (merge loan {
+                    collateral: (- (get collateral loan) withdrawal-amount)
+                })
+            )
+            
+            ;; Transfer collateral back to borrower (placeholder - actual transfer mechanism depends on implementation)
+            (ok withdrawal-amount)
+        )
     )
 )
 
