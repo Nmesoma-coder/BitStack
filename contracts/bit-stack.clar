@@ -6,7 +6,10 @@
 (define-constant ERR-INSUFFICIENT-COLLATERAL (err u2))
 (define-constant ERR-LOAN-NOT-FOUND (err u3))
 (define-constant ERR-LOAN-ALREADY-ACTIVE (err u4))
+(define-constant ERR-INVALID-INPUT (err u5))
 (define-constant COLLATERAL-RATIO u150) ;; 150% collateralization ratio
+(define-constant MAX-LOAN-DURATION u2880) ;; ~20 days (144 blocks/day)
+(define-constant MAX-INTEREST-RATE u1000) ;; 10% max interest rate
 
 ;; Data vars
 (define-data-var minimum-collateral uint u100000) ;; in sats
@@ -33,15 +36,46 @@
     (list 10 uint)
 )
 
+;; Input validation functions
+(define-private (is-valid-input 
+    (amount uint) 
+    (collateral uint) 
+    (interest-rate uint) 
+    (loan-duration uint)
+)
+    (and
+        ;; Amount and collateral must be positive
+        (> amount u0)
+        (> collateral u0)
+        
+        ;; Interest rate within bounds
+        (<= interest-rate MAX-INTEREST-RATE)
+        
+        ;; Loan duration within reasonable limits
+        (and (> loan-duration u0) (<= loan-duration MAX-LOAN-DURATION))
+        
+        ;; Validate collateral ratio
+        (is-collateral-ratio-valid amount collateral)
+    )
+)
+
 ;; Public functions
-(define-public (create-loan (amount uint) (collateral uint) (interest-rate uint) (loan-duration uint))
+(define-public (create-loan 
+    (amount uint) 
+    (collateral uint) 
+    (interest-rate uint) 
+    (loan-duration uint)
+)
     (let
         (
             (caller tx-sender)
             (loan-id (get-next-loan-id))
         )
-        ;; Validate collateral ratio
-        (asserts! (is-collateral-ratio-valid amount collateral) ERR-INSUFFICIENT-COLLATERAL)
+        ;; Validate all inputs
+        (asserts! 
+            (is-valid-input amount collateral interest-rate loan-duration) 
+            ERR-INVALID-INPUT
+        )
         
         ;; Create loan entry
         (map-set loans 
@@ -83,6 +117,9 @@
             (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
             (caller tx-sender)
         )
+        ;; Additional validation for loan-id
+        (asserts! (> loan-id u0) ERR-INVALID-INPUT)
+        
         (asserts! (is-eq (get status loan) "PENDING") ERR-LOAN-ALREADY-ACTIVE)
         (asserts! (not (is-eq (get borrower loan) caller)) ERR-NOT-AUTHORIZED)
         
@@ -105,6 +142,9 @@
             (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
             (caller tx-sender)
         )
+        ;; Additional validation for loan-id
+        (asserts! (> loan-id u0) ERR-INVALID-INPUT)
+        
         (asserts! (is-eq (get borrower loan) caller) ERR-NOT-AUTHORIZED)
         (asserts! (is-eq (get status loan) "ACTIVE") ERR-LOAN-NOT-FOUND)
         
