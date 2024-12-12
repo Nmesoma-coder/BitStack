@@ -11,6 +11,7 @@
 ;; Data vars
 (define-data-var minimum-collateral uint u100000) ;; in sats
 (define-data-var protocol-fee uint u100) ;; basis points (1% = 100)
+(define-data-var last-loan-id uint u0)
 
 ;; Data maps
 (define-map loans
@@ -33,27 +34,43 @@
 )
 
 ;; Public functions
-(define-public (create-loan (amount uint) (collateral uint) (interest-rate uint) (duration uint))
+(define-public (create-loan (amount uint) (collateral uint) (interest-rate uint) (loan-duration uint))
     (let
         (
-            (loan-id (get-next-loan-id))
             (caller tx-sender)
+            (loan-id (get-next-loan-id))
         )
-        (asserts! (>= collateral (var-get minimum-collateral)) ERR-INSUFFICIENT-COLLATERAL)
+        ;; Validate collateral ratio
         (asserts! (is-collateral-ratio-valid amount collateral) ERR-INSUFFICIENT-COLLATERAL)
         
-        (map-set loans
+        ;; Create loan entry
+        (map-set loans 
             { loan-id: loan-id }
             {
                 borrower: caller,
-                lender: none,
+                lender: caller,
                 amount: amount,
                 collateral: collateral,
                 interest-rate: interest-rate,
                 start-height: block-height,
-                end-height: (+ block-height duration),
+                end-height: (+ block-height loan-duration),
                 status: "PENDING"
             }
+        )
+        
+        ;; Update user's loan list
+        (map-set user-loans
+            caller
+            (unwrap! 
+                (as-max-len? 
+                    (append 
+                        (default-to (list) (map-get? user-loans caller)) 
+                        loan-id
+                    ) 
+                    u10
+                )
+                ERR-NOT-AUTHORIZED
+            )
         )
         
         (ok loan-id)
@@ -67,6 +84,7 @@
             (caller tx-sender)
         )
         (asserts! (is-eq (get status loan) "PENDING") ERR-LOAN-ALREADY-ACTIVE)
+        (asserts! (not (is-eq (get borrower loan) caller)) ERR-NOT-AUTHORIZED)
         
         ;; Update loan status and set lender
         (map-set loans
@@ -134,7 +152,14 @@
 )
 
 (define-private (get-next-loan-id)
-    (default-to u1 (get-last-loan-id))
+    (let
+        (
+            (current-id (var-get last-loan-id))
+            (next-id (+ current-id u1))
+        )
+        (var-set last-loan-id next-id)
+        next-id
+    )
 )
 
 ;; Read-only functions
