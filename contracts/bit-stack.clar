@@ -8,10 +8,14 @@
 (define-constant ERR-LOAN-ALREADY-ACTIVE (err u4))
 (define-constant ERR-INVALID-INPUT (err u5))
 (define-constant ERR-INSUFFICIENT-EXCESS-COLLATERAL (err u6))
-(define-constant COLLATERAL-RATIO u150) ;; 150% collateralization ratio
+(define-constant ERR-LOAN-ALREADY-LIQUIDATED (err u7))
+
+;; Liquidation-specific constants
+(define-constant LIQUIDATION-THRESHOLD u125) ;; 125% collateralization ratio
+(define-constant LIQUIDATION-PENALTY u110) ;; 10% penalty on liquidation
+(define-constant COLLATERAL-RATIO u150) ;; 150% initial collateralization ratio
 (define-constant MAX-LOAN-DURATION u2880) ;; ~20 days (144 blocks/day)
 (define-constant MAX-INTEREST-RATE u1000) ;; 10% max interest rate
-(define-constant MIN-COLLATERAL-BUFFER u50) ;; Minimum buffer to prevent withdrawals that could liquidate the loan
 
 ;; Data vars
 (define-data-var minimum-collateral uint u100000) ;; in sats
@@ -30,6 +34,15 @@
         start-height: uint,
         end-height: uint,
         status: (string-ascii 20)
+    }
+)
+
+(define-map liquidations
+    { loan-id: uint }
+    {
+        liquidator: principal,
+        liquidation-height: uint,
+        liquidation-amount: uint
     }
 )
 
@@ -61,29 +74,79 @@
     )
 )
 
-;; Collateral management functions
-(define-private (calculate-minimum-required-collateral (loan-amount uint))
-    (/ (* loan-amount COLLATERAL-RATIO) u10000)
-)
-
-(define-private (calculate-max-withdrawable-collateral 
-    (current-collateral uint) 
-    (loan-amount uint)
-)
+;; Collateral and liquidation helper functions
+(define-private (is-collateral-ratio-valid (loan-amount uint) (collateral-amount uint))
     (let
         (
-            (min-required (calculate-minimum-required-collateral loan-amount))
-            ;; Add a small buffer to prevent risky withdrawals
-            (safe-buffer (/ min-required u10))
+            (min-collateral (* loan-amount COLLATERAL-RATIO))
         )
-        (if (> current-collateral (+ min-required safe-buffer))
-            (- current-collateral (+ min-required safe-buffer))
-            u0
+        (>= (* collateral-amount u10000) min-collateral)
+    )
+)
+
+(define-private (calculate-current-collateral-ratio (loan-amount uint) (collateral-amount uint))
+    (/ (* collateral-amount u10000) loan-amount)
+)
+
+(define-public (check-and-liquidate (loan-id uint))
+    (let
+        (
+            (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
+            (caller tx-sender)
+        )
+        ;; Ensure loan is not already liquidated or repaid
+        (asserts! (is-eq (get status loan) "ACTIVE") ERR-LOAN-NOT-FOUND)
+        
+        ;; Calculate current collateral ratio
+        (let
+            (
+                (current-ratio 
+                    (calculate-current-collateral-ratio 
+                        (get amount loan) 
+                        (get collateral loan)
+                    )
+                )
+            )
+            ;; Check if loan is below liquidation threshold
+            (asserts! (< current-ratio LIQUIDATION-THRESHOLD) ERR-INSUFFICIENT-COLLATERAL)
+            
+            ;; Calculate liquidation amount with penalty
+            (let
+                (
+                    (penalty-multiplier LIQUIDATION-PENALTY)
+                    (liquidation-amount 
+                        (/ 
+                            (* (get amount loan) penalty-multiplier) 
+                            u100
+                        )
+                    )
+                )
+                ;; Update loan status to liquidated
+                (map-set loans
+                    { loan-id: loan-id }
+                    (merge loan {
+                        status: "LIQUIDATED",
+                        collateral: u0
+                    })
+                )
+                
+                ;; Record liquidation details
+                (map-set liquidations
+                    { loan-id: loan-id }
+                    {
+                        liquidator: caller,
+                        liquidation-height: block-height,
+                        liquidation-amount: liquidation-amount
+                    }
+                )
+                
+                (ok liquidation-amount)
+            )
         )
     )
 )
 
-;; Public functions
+;; Partial collateral withdrawal function (from previous implementation)
 (define-public (withdraw-excess-collateral 
     (loan-id uint) 
     (withdrawal-amount uint)
@@ -119,13 +182,31 @@
                 })
             )
             
-            ;; Transfer collateral back to borrower (placeholder - actual transfer mechanism depends on implementation)
+            ;; Transfer collateral back to borrower (placeholder)
             (ok withdrawal-amount)
         )
     )
 )
 
-;; Public functions
+;; Existing helper function
+(define-private (calculate-max-withdrawable-collateral 
+    (current-collateral uint) 
+    (loan-amount uint)
+)
+    (let
+        (
+            (min-required (/ (* loan-amount COLLATERAL-RATIO) u10000))
+            ;; Add a small buffer to prevent risky withdrawals
+            (safe-buffer (/ min-required u10))
+        )
+        (if (> current-collateral (+ min-required safe-buffer))
+            (- current-collateral (+ min-required safe-buffer))
+            u0
+        )
+    )
+)
+
+;; Existing functions from previous implementation
 (define-public (create-loan 
     (amount uint) 
     (collateral uint) 
@@ -238,16 +319,7 @@
     )
 )
 
-;; Private functions
-(define-private (is-collateral-ratio-valid (loan-amount uint) (collateral-amount uint))
-    (let
-        (
-            (min-collateral (* loan-amount COLLATERAL-RATIO))
-        )
-        (>= (* collateral-amount u10000) min-collateral)
-    )
-)
-
+;; Existing helper functions (calculate-interest, get-next-loan-id, etc.)
 (define-private (calculate-interest (principal uint) (rate uint) (blocks uint))
     (let
         (
@@ -271,6 +343,10 @@
 ;; Read-only functions
 (define-read-only (get-loan (loan-id uint))
     (map-get? loans { loan-id: loan-id })
+)
+
+(define-read-only (get-liquidation (loan-id uint))
+    (map-get? liquidations { loan-id: loan-id })
 )
 
 (define-read-only (get-user-loans (user principal))
