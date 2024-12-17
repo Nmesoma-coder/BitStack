@@ -352,3 +352,5 @@
 (define-read-only (get-user-loans (user principal))
     (default-to (list) (map-get? user-loans user))
 )
+
+
