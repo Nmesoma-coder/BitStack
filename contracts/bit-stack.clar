@@ -94,6 +94,9 @@
             (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
             (caller tx-sender)
         )
+        ;; Additional check for loan-id
+        (asserts! (> loan-id u0) ERR-INVALID-INPUT)
+        
         ;; Ensure loan is not already liquidated or repaid
         (asserts! (is-eq (get status loan) "ACTIVE") ERR-LOAN-NOT-FOUND)
         
@@ -146,7 +149,7 @@
     )
 )
 
-;; Partial collateral withdrawal function (from previous implementation)
+;; Partial collateral withdrawal function
 (define-public (withdraw-excess-collateral 
     (loan-id uint) 
     (withdrawal-amount uint)
@@ -156,6 +159,9 @@
             (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
             (caller tx-sender)
         )
+        ;; Additional check for loan-id
+        (asserts! (> loan-id u0) ERR-INVALID-INPUT)
+        
         ;; Validate inputs
         (asserts! (is-eq (get borrower loan) caller) ERR-NOT-AUTHORIZED)
         (asserts! (is-eq (get status loan) "ACTIVE") ERR-LOAN-NOT-FOUND)
@@ -352,5 +358,3 @@
 (define-read-only (get-user-loans (user principal))
     (default-to (list) (map-get? user-loans user))
 )
-
-
